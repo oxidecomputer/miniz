@@ -408,7 +408,7 @@ where
          * inherits O2's relationships.
          * XXX This could be more efficient with another index.
          */
-        let memberships = self.memberships.get(&Member::Object(object.clone()));
+        let memberships = self.memberships.get(&Member::Object(object));
         if memberships.is_none() {
             return false;
         }
