@@ -1,15 +1,16 @@
 /// Tiny in-memory implementation of the Zanzibar data model
+///
+/// See [`MiniZ`] for basic usage information.
+///
+/// A few notes:
+///
+/// * We use the term "relationship" where Zanzibar uses the term "relation" to
+///   avoid confusion with the database term "relation".
 /*
  * TODO:
  *
- * For clarity:
- * * "Sets" are really "Relationships".  Each one really defines a _family_ of
- *   sets -- one for each possible objectid.
- *
  * Things to implement:
  * - low-level operations:
- *   - Check membership including subsets and inherited sets.  This is
- *     really the key.
  *   - Remove member from set (needed to flesh out "write")
  *   - low level operations needed for "expand"
  * - higher level operations from section 2.4 of the paper
@@ -24,6 +25,7 @@
  * - Decide if the ID types ought to just be Copy, or if we should create
  *   our own IDs via interning them or what.  Either way, we shouldn't be
  *   cloning all over the place.
+ * - Add an example
  */
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -34,27 +36,98 @@ use std::fmt;
 pub struct RelationshipId(String);
 
 #[derive(Debug)]
-struct Set<O, U> {
+struct Relationship<O, U> {
+    /// For a given object, set of Members (objects or users) having this
+    /// relationship with that object
+    ///
+    /// This is changeable at runtime (after building).
     direct_members: BTreeMap<O, BTreeSet<Member<O, U>>>,
-    contained_sets: BTreeSet<RelationshipId>,
-    inherited_sets: BTreeSet<RelationshipId>,
+
+    /// Relationships that are implied by this relationship
+    ///
+    /// See [`RelationshipBuilder::with_subset`].
+    contained_relationships: BTreeSet<RelationshipId>,
+
+    /// Relationships that are inherited by this relationship
+    ///
+    /// This is similar to what Zanzibar calls "tuple_to_userset" when combined
+    /// with "computed_userset".  
+    ///
+    /// A typical example: we say that the "viewer" relationship inherits the
+    /// "parent" relationship, which means that if a user U has a "viewer"
+    /// relationship to an object O1, and object O1 has the "parent"
+    /// relationship to object O2, then U has a "viewer" relationship to O2 as
+    /// well.  The implementation here would include "parent" in the set of
+    /// inherited relationships for "viewer".
+    ///
+    /// Our implementation is less general than Zanzibar's, in that Zanzibar
+    /// supports saying something like: if U has a "recursive-viewer"
+    /// relationship with an object O1, and O1 is a parent of O2, then U has a
+    /// "viewer" relationship with O2.  We require that the two relationships be
+    /// the same.  This seems easy to generalize, though.
+    ///
+    inherited_relationships: BTreeSet<RelationshipId>,
 }
 
+///
+/// Describes anything that can have a relationship to an Object
+///
+/// Confusingly, Zanzibar calls this a "user", and it may be either a user_id or
+/// a "userset", and a "userset" is essentially an object-relation combination.
+///
+//
+// XXX This seems like a divergence: S2.1 of the paper says that a tuple could
+// be:
+//
+//     object_id # relation @ object_id # relation
+//
+// What does this mean?  I erroneusly assumed that this form meant:
+//
+//     object_id # relation @ object_id
+//
+// which would clearly mean the second object has the given relationship to the
+// first object.
+//
+// I guess the first one means that the set of _users_ having relationship R2 to
+// the second object have relationship R1 to the first object.  But if that's
+// true: how do you express relationships between objects?  What if you want to
+// say that O1 is a parent of O2?
+//
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Member<O, U> {
+    /// an object has the relationship to the given object
     Object(O),
+    /// a user has the relationship to the given object
     User(U),
 }
 
+///
+/// Describes one relationship that an object or user has
+///
+/// This is the dual of a [`Member`].
+///
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Membership<O> {
+    /// the object has relationship `rid`
     pub rid: RelationshipId,
+    /// the relationship is to object `object`
     pub object: O,
 }
 
+///
+/// Builder for a [`MiniZ`]
+///
+/// Conceptually, this object provides facilities that you might use when
+/// processing a Zanzibar configuration file.  Anything that can be changed at
+/// runtime (outside the configuration) does not belong here.
+///
+/// The only thing you can do with this is define relationships and then build a
+/// [`MiniZ`].
+///
 #[derive(Debug)]
 pub struct MiniZBuilder<O, U> {
-    sets: BTreeMap<RelationshipId, Set<O, U>>,
+    /// Configured relationships
+    relationships: BTreeMap<RelationshipId, Relationship<O, U>>,
 }
 
 impl<O, U> MiniZBuilder<O, U>
@@ -62,53 +135,88 @@ where
     O: Clone + fmt::Debug + Ord,
     U: Clone + fmt::Debug + Ord,
 {
-    pub fn new_set<S: AsRef<str>>(
+    /// Defines a new `Relationship` named `relationship_name`
+    pub fn new_relationship<S: AsRef<str>>(
         &mut self,
-        set_name: S,
-    ) -> SetBuilder<'_, O, U> {
-        SetBuilder {
+        relationship_name: S,
+    ) -> RelationshipBuilder<'_, O, U> {
+        RelationshipBuilder {
             miniz_builder: self,
-            name: set_name.as_ref().to_owned(),
-            contained_sets: BTreeSet::new(),
-            inherited_sets: BTreeSet::new(),
+            name: relationship_name.as_ref().to_owned(),
+            contained_relationships: BTreeSet::new(),
+            inherited_relationships: BTreeSet::new(),
         }
     }
 
+    /// Returns a `MiniZ` with the configuration defined in the builder
     pub fn build(self) -> MiniZ<O, U> {
-        MiniZ { sets: self.sets, memberships: BTreeMap::new() }
+        MiniZ { sets: self.relationships, memberships: BTreeMap::new() }
     }
 }
 
-pub struct SetBuilder<'a, O, U> {
+/// Used to configure a `Relationship`.  See [`MiniZBuilder`].
+pub struct RelationshipBuilder<'a, O, U> {
     miniz_builder: &'a mut MiniZBuilder<O, U>,
     name: String,
-    contained_sets: BTreeSet<RelationshipId>,
-    inherited_sets: BTreeSet<RelationshipId>,
+    contained_relationships: BTreeSet<RelationshipId>,
+    inherited_relationships: BTreeSet<RelationshipId>,
 }
 
-impl<'a, O, U> SetBuilder<'a, O, U>
+impl<'a, O, U> RelationshipBuilder<'a, O, U>
 where
     O: Clone + fmt::Debug + Ord,
     U: Clone + fmt::Debug + Ord,
 {
+    ///
+    /// Specify that the relationship `subrid` implies the current relationship
+    ///
+    /// A typical example: the "owner" relationship implies the "viewer"
+    /// relationship, which means that any user that's an "owner" is also a
+    /// "viewer".  More formally, if an object O1 has relationship `subrid` to
+    /// another object O2, then it also has this relationship with O2.
+    ///
     pub fn with_subset(mut self, subrid: &RelationshipId) -> Self {
-        self.contained_sets.insert(subrid.clone());
+        self.contained_relationships.insert(subrid.clone());
         self
     }
 
+    ///
+    /// Specify that the relationship `subrid` is inherited by the current
+    /// relationship
+    ///
+    /// This is similar to what Zanzibar calls "tuple_to_userset" when combined
+    /// with "computed_userset".  
+    ///
+    /// A typical example: we say that the "viewer" relationship inherits the
+    /// "parent" relationship, which means that if a user U has a "viewer"
+    /// relationship to an object O1, and object O1 has the "parent"
+    /// relationship to object O2, then U has a "viewer" relationship to O2 as
+    /// well.  The implementation here would include "parent" in the set of
+    /// inherited relationships for "viewer".
+    ///
+    /// Our implementation is less general than Zanzibar's, in that Zanzibar
+    /// supports saying something like: if U has a "recursive-viewer"
+    /// relationship with an object O1, and O1 is a parent of O2, then U has a
+    /// "viewer" relationship with O2.  Unlike Zanzibar, we require that the two
+    /// relationships be the same.  (This seems easy to generalize, though.)
+    /// 
     pub fn with_inherited_set(mut self, rid: &RelationshipId) -> Self {
-        self.inherited_sets.insert(rid.clone());
+        self.inherited_relationships.insert(rid.clone());
         self
     }
 
+    ///
+    /// Add the relationship configured by this builder to the parent
+    /// [`MiniZBuilder`] and return a [`RelationshipId`] for it.
+    ///
     pub fn build(self) -> RelationshipId {
         let rid = RelationshipId(self.name);
-        self.miniz_builder.sets.insert(
+        self.miniz_builder.relationships.insert(
             rid.clone(),
-            Set {
+            Relationship {
                 direct_members: BTreeMap::new(),
-                contained_sets: self.contained_sets,
-                inherited_sets: self.inherited_sets,
+                contained_relationships: self.contained_relationships,
+                inherited_relationships: self.inherited_relationships,
             },
         );
 
@@ -116,8 +224,20 @@ where
     }
 }
 
+///
+/// A toy in-memory implementation of the Zanzibar data model
+///
+/// In the Zanzibar data model, consumers statically configure relationships
+/// (like "parent" or "viewer").  At runtime, consumers add or remove specific
+/// relationships (e.g., X is a "parent" of Y).  In this API, the static
+/// configuration is provided via the [`MiniZBuilder`] (see
+/// [`MiniZ::builder()`]).  The runtime operations are provided by [`MiniZ`].
+///
+/// See the test case below for an example that corresponds to the one in the
+/// Zanzibar paper.
+///
 pub struct MiniZ<O, U> {
-    sets: BTreeMap<RelationshipId, Set<O, U>>,
+    sets: BTreeMap<RelationshipId, Relationship<O, U>>,
     memberships: BTreeMap<Member<O, U>, BTreeSet<Membership<O>>>,
 }
 
@@ -126,20 +246,23 @@ where
     O: Clone + fmt::Debug + Ord,
     U: Clone + fmt::Debug + Ord,
 {
+    /// Return a builder used to configure relationships known to this instance
     pub fn builder() -> MiniZBuilder<O, U> {
-        MiniZBuilder { sets: BTreeMap::new() }
+        MiniZBuilder { relationships: BTreeMap::new() }
     }
 
     /*
      * Write operations
      */
 
-    pub fn write_object(
-        &mut self,
-        rid: &RelationshipId,
-        parent: O,
-        child: O,
-    ) {
+    ///
+    /// Specify that object `child` directly has the `rid` relationship to
+    /// object `parent`
+    ///
+    /// (The relationship need not be hierarchical like "parent" is, but it's
+    /// easier to talk about the two objects with concrete names.)
+    ///
+    pub fn write_object(&mut self, rid: &RelationshipId, parent: O, child: O) {
         let set = self.sets.get_mut(rid).expect("no such set");
         let members = set
             .direct_members
@@ -155,6 +278,13 @@ where
         memberships.insert(Membership { rid: rid.clone(), object: parent });
     }
 
+    ///
+    /// Specify that user `child` directly has the `rid` relationship to object
+    /// `parent`
+    ///
+    /// (The relationship need not be hierarchical like "parent" is, but it's
+    /// easier to talk about the two objects with concrete names.)
+    /// 
     pub fn write_user(&mut self, rid: &RelationshipId, parent: O, child: U) {
         let set = self.sets.get_mut(rid).expect("no such set");
         let members = set
@@ -175,6 +305,11 @@ where
      * Read operations
      */
 
+    ///
+    /// Returns whether object `child` has relationship `rid` with object
+    /// `parent` _directly_.  To check for indirect relationships, see
+    /// [`check_member()`].
+    ///
     pub fn set_contains_object_directly(
         &self,
         rid: &RelationshipId,
@@ -188,6 +323,11 @@ where
         }
     }
 
+    ///
+    /// Returns whether user `child` has relationship `rid` with object
+    /// `parent` _directly_.  To check for indirect relationships, see
+    /// [`check_member()`].
+    ///
     pub fn set_contains_user_directly(
         &self,
         rid: &RelationshipId,
@@ -201,6 +341,7 @@ where
         }
     }
 
+    /// List the users and objects having a direct relationship with `parent`
     pub fn set_list_direct_members<'a, 'b>(
         &'a self,
         rid: &'b RelationshipId,
@@ -213,6 +354,7 @@ where
         }
     }
 
+    /// List the objects that this object has a direct relationship with
     pub fn object_lookup_memberships(&self, object: O) -> Vec<&Membership<O>> {
         match self.memberships.get(&Member::Object(object)) {
             Some(memberships) => memberships.iter().collect(),
@@ -220,6 +362,7 @@ where
         }
     }
 
+    /// List the objects that this user has a direct relationship with
     pub fn user_lookup_memberships(&self, user: U) -> Vec<&Membership<O>> {
         match self.memberships.get(&Member::User(user)) {
             Some(memberships) => memberships.iter().collect(),
@@ -227,6 +370,11 @@ where
         }
     }
 
+    ///
+    /// Check whether the user `user` has relationship `rid` with object
+    /// `object`, either directly or through a combination of implied or
+    /// inherited relationships
+    ///
     pub fn check_member(
         &self,
         rid: &RelationshipId,
@@ -248,7 +396,7 @@ where
          * Next, check recursively if the user is a member (directly or
          * otherwise) of a set directly contained in this set.
          */
-        for subrid in &set.contained_sets {
+        for subrid in &set.contained_relationships {
             if self.check_member(subrid, object.clone(), user.clone()) {
                 return true;
             }
@@ -268,7 +416,7 @@ where
         let inherited_present_memberships = memberships
             .unwrap()
             .into_iter()
-            .filter(|m| set.inherited_sets.contains(&m.rid));
+            .filter(|m| set.inherited_relationships.contains(&m.rid));
         for m in inherited_present_memberships {
             if self.check_member(&m.rid, m.object.clone(), user.clone()) {
                 return true;
@@ -298,12 +446,14 @@ mod test {
          * It looks intended to describe the Google Docs authorization behavior.
          */
         let mut miniz_builder = MiniZ::builder();
-        let set_owner = miniz_builder.new_set("owner").build();
-        let set_parent = miniz_builder.new_set("parent").build();
-        let set_editor =
-            miniz_builder.new_set("editor").with_subset(&set_owner).build();
+        let set_owner = miniz_builder.new_relationship("owner").build();
+        let set_parent = miniz_builder.new_relationship("parent").build();
+        let set_editor = miniz_builder
+            .new_relationship("editor")
+            .with_subset(&set_owner)
+            .build();
         let set_viewer = miniz_builder
-            .new_set("viewer")
+            .new_relationship("viewer")
             .with_subset(&set_editor)
             .with_inherited_set(&set_parent)
             .build();
