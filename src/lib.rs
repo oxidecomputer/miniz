@@ -199,7 +199,7 @@ where
     /// relationship with an object O1, and O1 is a parent of O2, then U has a
     /// "viewer" relationship with O2.  Unlike Zanzibar, we require that the two
     /// relationships be the same.  (This seems easy to generalize, though.)
-    /// 
+    ///
     pub fn with_inherited_set(mut self, rid: &RelationshipId) -> Self {
         self.inherited_relationships.insert(rid.clone());
         self
@@ -284,7 +284,7 @@ where
     ///
     /// (The relationship need not be hierarchical like "parent" is, but it's
     /// easier to talk about the two objects with concrete names.)
-    /// 
+    ///
     pub fn write_user(&mut self, rid: &RelationshipId, parent: O, child: U) {
         let set = self.sets.get_mut(rid).expect("no such set");
         let members = set
