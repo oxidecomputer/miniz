@@ -29,14 +29,15 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt;
 
+/// Unique id for a user-defined relationship
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SetId(String);
+pub struct RelationshipId(String);
 
 #[derive(Debug)]
-pub struct Set<O, U> {
+struct Set<O, U> {
     direct_members: BTreeMap<O, BTreeSet<Member<O, U>>>,
-    contained_sets: BTreeSet<SetId>,
-    inherited_sets: BTreeSet<SetId>,
+    contained_sets: BTreeSet<RelationshipId>,
+    inherited_sets: BTreeSet<RelationshipId>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -47,13 +48,13 @@ pub enum Member<O, U> {
 
 #[derive(Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Membership<O> {
-    pub set_id: SetId,
+    pub rid: RelationshipId,
     pub object: O,
 }
 
 #[derive(Debug)]
 pub struct MiniZBuilder<O, U> {
-    sets: BTreeMap<SetId, Set<O, U>>,
+    sets: BTreeMap<RelationshipId, Set<O, U>>,
 }
 
 impl<O, U> MiniZBuilder<O, U>
@@ -81,8 +82,8 @@ where
 pub struct SetBuilder<'a, O, U> {
     miniz_builder: &'a mut MiniZBuilder<O, U>,
     name: String,
-    contained_sets: BTreeSet<SetId>,
-    inherited_sets: BTreeSet<SetId>,
+    contained_sets: BTreeSet<RelationshipId>,
+    inherited_sets: BTreeSet<RelationshipId>,
 }
 
 impl<'a, O, U> SetBuilder<'a, O, U>
@@ -90,20 +91,20 @@ where
     O: Clone + fmt::Debug + Ord,
     U: Clone + fmt::Debug + Ord,
 {
-    pub fn with_subset(mut self, subset_id: &SetId) -> Self {
-        self.contained_sets.insert(subset_id.clone());
+    pub fn with_subset(mut self, subrid: &RelationshipId) -> Self {
+        self.contained_sets.insert(subrid.clone());
         self
     }
 
-    pub fn with_inherited_set(mut self, set_id: &SetId) -> Self {
-        self.inherited_sets.insert(set_id.clone());
+    pub fn with_inherited_set(mut self, rid: &RelationshipId) -> Self {
+        self.inherited_sets.insert(rid.clone());
         self
     }
 
-    pub fn build(self) -> SetId {
-        let set_id = SetId(self.name);
+    pub fn build(self) -> RelationshipId {
+        let rid = RelationshipId(self.name);
         self.miniz_builder.sets.insert(
-            set_id.clone(),
+            rid.clone(),
             Set {
                 direct_members: BTreeMap::new(),
                 contained_sets: self.contained_sets,
@@ -111,12 +112,12 @@ where
             },
         );
 
-        set_id
+        rid
     }
 }
 
 pub struct MiniZ<O, U> {
-    sets: BTreeMap<SetId, Set<O, U>>,
+    sets: BTreeMap<RelationshipId, Set<O, U>>,
     memberships: BTreeMap<Member<O, U>, BTreeSet<Membership<O>>>,
 }
 
@@ -133,8 +134,13 @@ where
      * Write operations
      */
 
-    pub fn write_object(&mut self, set_id: &SetId, parent: O, child: O) {
-        let set = self.sets.get_mut(set_id).expect("no such set");
+    pub fn write_object(
+        &mut self,
+        rid: &RelationshipId,
+        parent: O,
+        child: O,
+    ) {
+        let set = self.sets.get_mut(rid).expect("no such set");
         let members = set
             .direct_members
             .entry(parent.clone())
@@ -146,12 +152,11 @@ where
         /* Update the reverse index. */
         let memberships =
             self.memberships.entry(new_value).or_insert_with(BTreeSet::new);
-        memberships
-            .insert(Membership { set_id: set_id.clone(), object: parent });
+        memberships.insert(Membership { rid: rid.clone(), object: parent });
     }
 
-    pub fn write_user(&mut self, set_id: &SetId, parent: O, child: U) {
-        let set = self.sets.get_mut(set_id).expect("no such set");
+    pub fn write_user(&mut self, rid: &RelationshipId, parent: O, child: U) {
+        let set = self.sets.get_mut(rid).expect("no such set");
         let members = set
             .direct_members
             .entry(parent.clone())
@@ -163,8 +168,7 @@ where
         /* Update the reverse index. */
         let memberships =
             self.memberships.entry(new_value).or_insert_with(BTreeSet::new);
-        memberships
-            .insert(Membership { set_id: set_id.clone(), object: parent });
+        memberships.insert(Membership { rid: rid.clone(), object: parent });
     }
 
     /*
@@ -173,11 +177,11 @@ where
 
     pub fn set_contains_object_directly(
         &self,
-        set_id: &SetId,
+        rid: &RelationshipId,
         parent: &O,
         child: O,
     ) -> bool {
-        let set = self.sets.get(set_id).expect("no such set");
+        let set = self.sets.get(rid).expect("no such set");
         match set.direct_members.get(parent) {
             Some(members) => members.contains(&Member::Object(child)),
             None => false,
@@ -186,11 +190,11 @@ where
 
     pub fn set_contains_user_directly(
         &self,
-        set_id: &SetId,
+        rid: &RelationshipId,
         parent: &O,
         child: U,
     ) -> bool {
-        let set = self.sets.get(set_id).expect("no such set");
+        let set = self.sets.get(rid).expect("no such set");
         match set.direct_members.get(parent) {
             Some(members) => members.contains(&Member::User(child)),
             None => false,
@@ -199,10 +203,10 @@ where
 
     pub fn set_list_direct_members<'a, 'b>(
         &'a self,
-        set_id: &'b SetId,
+        rid: &'b RelationshipId,
         parent: &'b O,
     ) -> Vec<&Member<O, U>> {
-        let set = self.sets.get(set_id).expect("no such set");
+        let set = self.sets.get(rid).expect("no such set");
         match set.direct_members.get(parent) {
             Some(members) => members.iter().collect(),
             None => Vec::new(),
@@ -223,8 +227,13 @@ where
         }
     }
 
-    pub fn check_member(&self, set_id: &SetId, object: O, user: U) -> bool {
-        let set = self.sets.get(set_id).expect("no such set");
+    pub fn check_member(
+        &self,
+        rid: &RelationshipId,
+        object: O,
+        user: U,
+    ) -> bool {
+        let set = self.sets.get(rid).expect("no such set");
 
         /*
          * First, check if the user is a direct member of this set.
@@ -239,8 +248,8 @@ where
          * Next, check recursively if the user is a member (directly or
          * otherwise) of a set directly contained in this set.
          */
-        for subset_id in &set.contained_sets {
-            if self.check_member(subset_id, object.clone(), user.clone()) {
+        for subrid in &set.contained_sets {
+            if self.check_member(subrid, object.clone(), user.clone()) {
                 return true;
             }
         }
@@ -259,9 +268,9 @@ where
         let inherited_present_memberships = memberships
             .unwrap()
             .into_iter()
-            .filter(|m| set.inherited_sets.contains(&m.set_id));
+            .filter(|m| set.inherited_sets.contains(&m.rid));
         for m in inherited_present_memberships {
-            if self.check_member(&m.set_id, m.object.clone(), user.clone()) {
+            if self.check_member(&m.rid, m.object.clone(), user.clone()) {
                 return true;
             }
         }
@@ -453,11 +462,11 @@ mod test {
         );
         assert_eq!(
             miniz.object_lookup_memberships(doc123),
-            vec![&Membership { set_id: set_parent.clone(), object: dir1 }]
+            vec![&Membership { rid: set_parent.clone(), object: dir1 }]
         );
         assert_eq!(
             miniz.user_lookup_memberships(user_alice),
-            vec![&Membership { set_id: set_owner.clone(), object: dir1 }]
+            vec![&Membership { rid: set_owner.clone(), object: dir1 }]
         );
 
         /* "Check" API */
