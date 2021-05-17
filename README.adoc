@@ -1,0 +1,9 @@
+:showtitle:
+:toc: left
+:icons: font
+
+= MiniZ
+
+MiniZ is a toy in-memory implementation of the Zanzibar data model.
+
+See https://docs.rs/miniz[https://docs.rs/miniz] for API documentation.  See the test in src/lib.rs for a concrete example.
