@@ -534,7 +534,7 @@ mod test {
         /* Non-existent document is contained nowhere. */
         assert!(!miniz.set_contains_object_directly(
             &set_parent,
-            &dir2,
+            &dir1,
             doc789
         ));
         assert!(!miniz.set_contains_object_directly(
